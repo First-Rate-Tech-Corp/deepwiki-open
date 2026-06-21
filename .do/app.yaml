@@ -1,77 +1,141 @@
 # DigitalOcean App Platform spec for DeepWiki (First-Rate-Tech-Corp)
 # ------------------------------------------------------------------
-# This deploys DeepWiki as ONE Docker container built from the repo's
-# Dockerfile. The container runs:
-#   - the Python backend  (python -m api.main --port 8001)  -> internal only
-#   - the Next.js frontend (node server.js on PORT=3000)    -> public HTTP
-# Public traffic hits the frontend on port 3000; the frontend talks to the
-# backend internally via SERVER_BASE_URL=http://localhost:8001.
+# This deploys DeepWiki as TWO services built from the SAME repo and the SAME
+# Dockerfile, just started with different commands:
+#
+#   - service "web": the Next.js frontend          ->  node server.js  (port 3000)
+#   - service "api": the Python/FastAPI backend     ->  python -m api.main --port 8001
+#
+# WHY TWO SERVICES (this is the chat fix):
+#   The wiki pages work as a single container because the frontend's HTTP API
+#   calls are proxied SERVER-SIDE by Next.js (next.config.ts rewrites) to the
+#   backend. But the interactive "Ask"/chat feature opens a WebSocket DIRECTLY
+#   from the browser. In a single public container the browser tried to reach
+#   ws://localhost:8001, which it cannot. By splitting into two services and
+#   routing the public "/ws" path to the api service, the browser now connects
+#   to wss://<your-app-host>/ws/chat and chat works.
+#
+# HOW REQUESTS ARE ROUTED (path-based):
+#   /ws/*  -> api service (the chat WebSocket: /ws/chat)
+#   /      -> web service (everything else; the Next.js app, which itself
+#             proxies the other backend HTTP paths to the api service
+#             internally via SERVER_BASE_URL).
+#   App Platform matches the LONGEST path prefix first, so /ws wins over /.
+#
+# INTERNAL WIRING:
+#   The web service talks to the api service over App Platform's private network
+#   using the component name as the hostname: http://api:8001  (see
+#   SERVER_BASE_URL below). This keeps the backend off the public internet for
+#   everything except the WebSocket path.
 #
 # NOTE ON INSTANCE SIZE / RAM:
-#   Indexing a repository loads it into memory and builds embeddings.
-#   Anything under ~1 GB of RAM can OOM (out-of-memory) and crash mid-index.
-#   We use professional-xs (1 GB / 1 vCPU). If you index large repos and see
-#   crashes, bump to a larger size (e.g. professional-s, 2 GB).
+#   Indexing a repository loads it into memory and builds embeddings. Anything
+#   under ~1 GB of RAM can OOM and crash mid-index. The api service does the
+#   heavy lifting, so it gets professional-xs (1 GB / 1 vCPU). The web service
+#   is light and uses basic-xs. Bump the api size if large repos crash indexing.
 #
 # NOTE ON THE GitHub SOURCE BLOCK:
 #   After forking, this repo lives at github.com/First-Rate-Tech-Corp/deepwiki-open
 #   on its default branch "main". Adjust "branch" if the fork's default differs.
 name: deepwiki-frtc
 region: nyc
+
 services:
-  - name: deepwiki
-    # Build the single combined container from the repo's Dockerfile.
+  # ---------------------------------------------------------------------------
+  # FRONTEND (public website). Serves "/" and everything that isn't "/ws".
+  # ---------------------------------------------------------------------------
+  - name: web
     dockerfile_path: Dockerfile
     source_dir: /
     github:
       repo: First-Rate-Tech-Corp/deepwiki-open
       branch: main
       deploy_on_push: true
-    # Public HTTP port = the Next.js frontend.
+    # Start ONLY the Next.js standalone server (not the combined start.sh).
+    run_command: PORT=3000 HOSTNAME=0.0.0.0 node server.js
     http_port: 3000
     instance_count: 1
-    # 1 GB / 1 vCPU. Smaller sizes (<1 GB) risk OOM during indexing.
-    instance_size_slug: professional-xs
+    instance_size_slug: basic-xs
+    # This service answers the catch-all path.
+    routes:
+      - path: /
     health_check:
       http_path: /
     envs:
       # --- Google Gemini (embeddings + generation) ---
-      # Mint at Google AI Studio (https://aistudio.google.com/apikey) or your
-      # existing Google Cloud project. Set the actual value in the DO dashboard.
       - key: GOOGLE_API_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: "REPLACE_IN_DO_DASHBOARD"
 
       # --- Force the Google/Gemini embedder ---
-      # api/config.py reads DEEPWIKI_EMBEDDER_TYPE; "google" selects the
-      # embedder_google block (GoogleEmbedderClient, gemini-embedding-001).
       - key: DEEPWIKI_EMBEDDER_TYPE
         scope: RUN_AND_BUILD_TIME
         value: "google"
 
       # --- Frontend access gate (built-in DeepWiki auth) ---
-      # Turns on the auth-code wall in front of the UI.
       - key: DEEPWIKI_AUTH_MODE
         scope: RUN_AND_BUILD_TIME
         value: "true"
-      # The secret passphrase users must enter. Set the real value in DO.
       - key: DEEPWIKI_AUTH_CODE
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: "REPLACE_IN_DO_DASHBOARD"
 
       # --- Internal frontend -> backend wiring ---
-      # The frontend's server-side API routes proxy to the backend on localhost.
+      # The frontend's server-side API routes (next.config.ts rewrites) proxy to
+      # the api service over the private network. "api" is the api component's
+      # name; App Platform resolves it to the service's internal address.
+      # (Alternative App Platform binding var: ${api.PRIVATE_URL} -- see the
+      # "verify" notes in DEPLOY.md. The component-name hostname form below is
+      # the documented internal-networking pattern and avoids a possible
+      # trailing-slash surprise from PRIVATE_URL.)
       - key: SERVER_BASE_URL
         scope: RUN_AND_BUILD_TIME
-        value: "http://localhost:8001"
+        value: "http://api:8001"
 
-      # NOTE: NEXT_PUBLIC_SERVER_BASE_URL is intentionally NOT set.
-      # The client code reads process.env.SERVER_BASE_URL (not the NEXT_PUBLIC_
-      # variant), which is undefined in the browser and falls back to
-      # http://localhost:8001. HTTP wiki generation/viewing proxies correctly
-      # through the Next.js server-side API routes and works fine. The
-      # interactive "Ask"/chat feature opens a WebSocket directly from the
-      # browser to ws://localhost:8001/ws/chat, which cannot reach the
-      # container over a single public port. See DEPLOY.md "Known limitation".
+      # NOTE: The browser builds the chat WebSocket URL from window.location
+      # (wss://<this-host>/ws/chat), so we do NOT need NEXT_PUBLIC_WS_URL here.
+      # Only set NEXT_PUBLIC_WS_URL if the WebSocket must point at a DIFFERENT
+      # host than the website.
+
+  # ---------------------------------------------------------------------------
+  # BACKEND (FastAPI). Public ONLY on the "/ws" path (the chat WebSocket).
+  # All other backend HTTP paths are reached internally by the web service.
+  # ---------------------------------------------------------------------------
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: First-Rate-Tech-Corp/deepwiki-open
+      branch: main
+      deploy_on_push: true
+    # Start ONLY the Python backend (not the combined start.sh).
+    # NOTE: api/main.py reads the bind port from the PORT env var
+    # (os.environ.get("PORT", 8001)); it does NOT parse a --port flag. We set
+    # PORT=8001 explicitly so the bind port matches http_port below. (The
+    # trailing --port 8001 is harmless/ignored but kept for readability.)
+    run_command: PORT=8001 python -m api.main --port 8001
+    http_port: 8001
+    instance_count: 1
+    # 1 GB / 1 vCPU. Smaller sizes (<1 GB) risk OOM during indexing.
+    instance_size_slug: professional-xs
+    # Publicly route ONLY the WebSocket path to this service.
+    # /ws/chat is the FastAPI WebSocket route (api/api.py:
+    #   app.add_websocket_route("/ws/chat", handle_websocket_chat)).
+    # We route the "/ws" prefix so the browser's wss://<host>/ws/chat lands here.
+    routes:
+      - path: /ws
+    health_check:
+      http_path: /health
+    envs:
+      # --- Google Gemini (embeddings + generation) ---
+      - key: GOOGLE_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "REPLACE_IN_DO_DASHBOARD"
+
+      # --- Force the Google/Gemini embedder ---
+      - key: DEEPWIKI_EMBEDDER_TYPE
+        scope: RUN_AND_BUILD_TIME
+        value: "google"

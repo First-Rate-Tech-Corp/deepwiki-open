@@ -3,14 +3,28 @@
  * This replaces the HTTP streaming endpoint with a WebSocket connection
  */
 
-// Get the server base URL from environment or use default
-const SERVER_BASE_URL = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-
-// Convert HTTP URL to WebSocket URL
-const getWebSocketUrl = () => {
-  const baseUrl = SERVER_BASE_URL;
-  // Replace http:// with ws:// or https:// with wss://
-  const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
+/**
+ * Build the chat WebSocket URL.
+ *
+ * In the browser we MUST connect to the same public origin the page was served
+ * from. The chat WebSocket is opened directly from the browser; it is NOT
+ * proxied through the Next.js server like the HTTP API routes are. On a split
+ * deploy (e.g. DigitalOcean App Platform) the public origin routes the `/ws`
+ * path to the backend component, so `wss://<host>/ws/chat` reaches the API.
+ * NEXT_PUBLIC_WS_URL can override the base if the WS lives on another host.
+ *
+ * On the server / during local dev (no `window`), fall back to SERVER_BASE_URL
+ * (defaults to http://localhost:8001), which keeps docker-compose working.
+ */
+export const getWebSocketUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const base = process.env.NEXT_PUBLIC_WS_URL || `${proto}//${window.location.host}`;
+    return `${base}/ws/chat`;
+  }
+  // Non-browser context (SSR / local dev fallback).
+  const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+  const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws');
   return `${wsBaseUrl}/ws/chat`;
 };
 

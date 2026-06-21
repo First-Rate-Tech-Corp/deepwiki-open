@@ -264,10 +264,16 @@ Give me the numbered list with brief descriptions for each slide. Be creative bu
       let planContent = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        // Build the chat WebSocket URL. In the browser this connects to the
+        // same public origin over `/ws/chat` (the WS is opened directly from
+        // the browser and is NOT proxied through Next.js like the HTTP routes).
+        // On a split deploy the public origin routes `/ws` to the backend.
+        const proto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsBase = process.env.NEXT_PUBLIC_WS_URL
+          || (typeof window !== 'undefined'
+            ? `${proto}//${window.location.host}`
+            : (process.env.SERVER_BASE_URL || 'http://localhost:8001').replace(/^http/, 'ws'));
+        const wsUrl = `${wsBase}/ws/chat`;
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);
@@ -540,10 +546,16 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
         let slideContent = '';
 
         try {
-          // Create WebSocket URL from the server base URL
-          const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-          const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-          const wsUrl = `${wsBaseUrl}/ws/chat`;
+          // Build the chat WebSocket URL. In the browser this connects to the
+          // same public origin over `/ws/chat` (the WS is opened directly from
+          // the browser and is NOT proxied through Next.js like the HTTP routes).
+          // On a split deploy the public origin routes `/ws` to the backend.
+          const proto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsBase = process.env.NEXT_PUBLIC_WS_URL
+            || (typeof window !== 'undefined'
+              ? `${proto}//${window.location.host}`
+              : (process.env.SERVER_BASE_URL || 'http://localhost:8001').replace(/^http/, 'ws'));
+          const wsUrl = `${wsBase}/ws/chat`;
 
           // Create a new WebSocket connection
           const ws = new WebSocket(wsUrl);
