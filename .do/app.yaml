@@ -1,0 +1,77 @@
+# DigitalOcean App Platform spec for DeepWiki (First-Rate-Tech-Corp)
+# ------------------------------------------------------------------
+# This deploys DeepWiki as ONE Docker container built from the repo's
+# Dockerfile. The container runs:
+#   - the Python backend  (python -m api.main --port 8001)  -> internal only
+#   - the Next.js frontend (node server.js on PORT=3000)    -> public HTTP
+# Public traffic hits the frontend on port 3000; the frontend talks to the
+# backend internally via SERVER_BASE_URL=http://localhost:8001.
+#
+# NOTE ON INSTANCE SIZE / RAM:
+#   Indexing a repository loads it into memory and builds embeddings.
+#   Anything under ~1 GB of RAM can OOM (out-of-memory) and crash mid-index.
+#   We use professional-xs (1 GB / 1 vCPU). If you index large repos and see
+#   crashes, bump to a larger size (e.g. professional-s, 2 GB).
+#
+# NOTE ON THE GitHub SOURCE BLOCK:
+#   After forking, this repo lives at github.com/First-Rate-Tech-Corp/deepwiki-open
+#   on its default branch "main". Adjust "branch" if the fork's default differs.
+name: deepwiki-frtc
+region: nyc
+services:
+  - name: deepwiki
+    # Build the single combined container from the repo's Dockerfile.
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: First-Rate-Tech-Corp/deepwiki-open
+      branch: main
+      deploy_on_push: true
+    # Public HTTP port = the Next.js frontend.
+    http_port: 3000
+    instance_count: 1
+    # 1 GB / 1 vCPU. Smaller sizes (<1 GB) risk OOM during indexing.
+    instance_size_slug: professional-xs
+    health_check:
+      http_path: /
+    envs:
+      # --- Google Gemini (embeddings + generation) ---
+      # Mint at Google AI Studio (https://aistudio.google.com/apikey) or your
+      # existing Google Cloud project. Set the actual value in the DO dashboard.
+      - key: GOOGLE_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "REPLACE_IN_DO_DASHBOARD"
+
+      # --- Force the Google/Gemini embedder ---
+      # api/config.py reads DEEPWIKI_EMBEDDER_TYPE; "google" selects the
+      # embedder_google block (GoogleEmbedderClient, gemini-embedding-001).
+      - key: DEEPWIKI_EMBEDDER_TYPE
+        scope: RUN_AND_BUILD_TIME
+        value: "google"
+
+      # --- Frontend access gate (built-in DeepWiki auth) ---
+      # Turns on the auth-code wall in front of the UI.
+      - key: DEEPWIKI_AUTH_MODE
+        scope: RUN_AND_BUILD_TIME
+        value: "true"
+      # The secret passphrase users must enter. Set the real value in DO.
+      - key: DEEPWIKI_AUTH_CODE
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "REPLACE_IN_DO_DASHBOARD"
+
+      # --- Internal frontend -> backend wiring ---
+      # The frontend's server-side API routes proxy to the backend on localhost.
+      - key: SERVER_BASE_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "http://localhost:8001"
+
+      # NOTE: NEXT_PUBLIC_SERVER_BASE_URL is intentionally NOT set.
+      # The client code reads process.env.SERVER_BASE_URL (not the NEXT_PUBLIC_
+      # variant), which is undefined in the browser and falls back to
+      # http://localhost:8001. HTTP wiki generation/viewing proxies correctly
+      # through the Next.js server-side API routes and works fine. The
+      # interactive "Ask"/chat feature opens a WebSocket directly from the
+      # browser to ws://localhost:8001/ws/chat, which cannot reach the
+      # container over a single public port. See DEPLOY.md "Known limitation".
