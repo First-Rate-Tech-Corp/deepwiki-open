@@ -52,7 +52,7 @@ services:
       branch: main
       deploy_on_push: true
     # Start ONLY the Next.js standalone server (not the combined start.sh).
-    run_command: PORT=3000 HOSTNAME=0.0.0.0 node server.js
+    run_command: "sh -c 'PORT=3000 HOSTNAME=0.0.0.0 node server.js'"
     http_port: 3000
     instance_count: 1
     instance_size_slug: basic-xs
@@ -115,7 +115,7 @@ services:
     # (os.environ.get("PORT", 8001)); it does NOT parse a --port flag. We set
     # PORT=8001 explicitly so the bind port matches http_port below. (The
     # trailing --port 8001 is harmless/ignored but kept for readability.)
-    run_command: PORT=8001 python -m api.main --port 8001
+    run_command: "sh -c 'PORT=8001 python -m api.main --port 8001'"
     http_port: 8001
     instance_count: 1
     # 1 GB / 1 vCPU. Smaller sizes (<1 GB) risk OOM during indexing.
