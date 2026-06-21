@@ -126,6 +126,9 @@ services:
     # We route the "/ws" prefix so the browser's wss://<host>/ws/chat lands here.
     routes:
       - path: /ws
+        # Keep the full path: the FastAPI WS route is /ws/chat. Without this, DO
+        # strips "/ws" and forwards "/chat", which doesn't match → 404.
+        preserve_path_prefix: true
     health_check:
       http_path: /health
     envs:
